@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go mod:*)",
+      "Read(//usr/local/go/bin/**)",
+      "Read(//opt/homebrew/Cellar/go/1.26.1/libexec/bin/**)",
+      "Bash(echo $PATH)",
+      "Bash(export PATH=\"/usr/local/go/bin:/opt/homebrew/bin:$PATH\")",
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(./bin/lucid)",
+      "Bash(echo \"exit: $?\")"
+    ]
+  }
+}

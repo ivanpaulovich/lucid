@@ -1,0 +1,239 @@
+#!/bin/sh
+set -e
+
+# lucid — explain git diffs using AI
+# Requires: claude (Claude Code CLI)
+
+VERSION="0.2.0"
+LEVEL="default"
+FORMAT="terminal"
+MAX_DIFF_BYTES=80000
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: lucid [flags] [target]
+
+lucid explains git diffs using AI — like a teammate walking you through a PR.
+
+Targets (optional — auto-detects if omitted):
+  lucid                     auto-detect: staged, then unstaged, then last commit
+  lucid <commit>            explain a single commit
+  lucid <commit>..<commit>  explain a commit range
+  lucid --pr <number>       explain a GitHub PR (requires gh CLI)
+  git diff ... | lucid      read diff from stdin (pipe mode)
+
+Flags:
+  --format   terminal (default) or json
+  --level    summary, default, or full
+  --pr       explain a GitHub pull request by number
+  --version  print version
+  --help     show this help
+EOF
+}
+
+PR=""
+TARGET=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --level)   LEVEL="$2"; shift 2 ;;
+    --format)  FORMAT="$2"; shift 2 ;;
+    --pr)      PR="$2"; shift 2 ;;
+    --version) echo "lucid $VERSION"; exit 0 ;;
+    --help|-h) usage; exit 0 ;;
+    -*)        echo "lucid: unknown flag: $1" >&2; exit 1 ;;
+    *)         TARGET="$1"; shift ;;
+  esac
+done
+
+if ! command -v claude >/dev/null 2>&1; then
+  echo "lucid: 'claude' CLI not found. Install Claude Code first:" >&2
+  echo "  https://docs.anthropic.com/en/docs/claude-code" >&2
+  exit 1
+fi
+
+# --- Resolve diff ---
+
+get_diff() {
+  # Pipe mode: stdin is not a terminal
+  if [ ! -t 0 ]; then
+    cat
+    return
+  fi
+
+  # PR mode
+  if [ -n "$PR" ]; then
+    if ! command -v gh >/dev/null 2>&1; then
+      echo "lucid: 'gh' CLI required for --pr. Install: https://cli.github.com" >&2
+      exit 1
+    fi
+    gh pr diff "$PR"
+    return
+  fi
+
+  # Explicit target: commit or range
+  if [ -n "$TARGET" ]; then
+    git diff "$TARGET"
+    return
+  fi
+
+  # Auto-detect: staged > unstaged > last commit
+  STAGED=$(git diff --cached --stat 2>/dev/null)
+  if [ -n "$STAGED" ]; then
+    echo "lucid: explaining staged changes" >&2
+    git diff --cached
+    return
+  fi
+
+  UNSTAGED=$(git diff --stat 2>/dev/null)
+  if [ -n "$UNSTAGED" ]; then
+    echo "lucid: explaining unstaged changes" >&2
+    git diff
+    return
+  fi
+
+  # Nothing staged or unstaged — check for untracked files
+  UNTRACKED=$(git ls-files --others --exclude-standard 2>/dev/null)
+  if [ -n "$UNTRACKED" ]; then
+    echo "lucid: explaining untracked files (staging temporarily)" >&2
+    git add --intent-to-add .
+    git diff
+    git reset --quiet
+    return
+  fi
+
+  # Fall back to last commit
+  echo "lucid: explaining last commit" >&2
+  git diff HEAD~1
+}
+
+DIFF=$(get_diff)
+if [ -z "$(printf '%s' "$DIFF" | tr -d '[:space:]')" ]; then
+  echo "lucid: no changes to explain" >&2
+  exit 0
+fi
+
+# --- Diff size handling ---
+
+DIFF_SIZE=$(printf '%s' "$DIFF" | wc -c | tr -d ' ')
+
+truncate_diff() {
+  printf '%s' "$DIFF" | head -c "$MAX_DIFF_BYTES"
+  printf '\n\n[... diff truncated at %s bytes. Total size: %s bytes.]\n' "$MAX_DIFF_BYTES" "$DIFF_SIZE"
+}
+
+# For very large diffs, prepend a file-level summary and truncate
+if [ "$DIFF_SIZE" -gt "$MAX_DIFF_BYTES" ]; then
+  FILE_SUMMARY=$(printf '%s' "$DIFF" | grep '^diff --git' | sed 's|diff --git a/\(.*\) b/.*|\1|')
+  DIFF_HEADER="This is a LARGE diff (${DIFF_SIZE} bytes, truncated to ${MAX_DIFF_BYTES}).
+
+Files changed:
+${FILE_SUMMARY}
+
+The diff below is truncated. Focus on explaining the overall intent and architecture.
+Mention files you can see, and note that additional files were truncated.
+
+$(truncate_diff)"
+  DIFF="$DIFF_HEADER"
+fi
+
+# --- Prompt construction ---
+
+level_instructions() {
+  case "$LEVEL" in
+    summary)
+      cat <<'EOF'
+Provide ONLY:
+- A 1-2 sentence summary
+- Intent groups with name, description, and risk level
+- Do NOT list individual files or hunks
+EOF
+      ;;
+    full)
+      cat <<'EOF'
+Provide FULL detail:
+- A 1-2 sentence summary
+- Intent groups with description and risk level
+- Per-file summaries within each group
+- For each file, annotate the key hunks: what lines changed and why
+EOF
+      ;;
+    *)
+      cat <<'EOF'
+Provide:
+- A 1-2 sentence summary
+- Intent groups with description and risk level
+- Per-file summaries within each group
+- Do NOT annotate individual hunks
+EOF
+      ;;
+  esac
+}
+
+format_instructions() {
+  case "$FORMAT" in
+    json)
+      cat <<'EOF'
+Respond ONLY with valid JSON matching this schema (no markdown fences):
+{
+  "summary": "string",
+  "intent_groups": [
+    {
+      "intent": "short name",
+      "description": "1-2 sentences",
+      "files": [{"path": "string", "summary": "string", "hunks": [{"start_line": 0, "end_line": 0, "annotation": "string"}]}],
+      "risk": "low|medium|high"
+    }
+  ],
+  "stats": {"files_changed": 0, "additions": 0, "deletions": 0}
+}
+For summary level, set "files" to []. For default level, set "hunks" to [].
+EOF
+      ;;
+    *)
+      cat <<'EOF'
+Format your response as plain text for a terminal:
+
+Start with a 1-2 sentence summary.
+
+Then list each intent group as:
+
+  [N] Intent Name  (risk: low/medium/high)
+      Description of what this group of changes achieves.
+      Files: path/to/file1, path/to/file2
+
+Number groups sequentially. Keep it concise and scannable.
+Do not use markdown. Do not use headers with #. Just clean indented text.
+EOF
+      ;;
+  esac
+}
+
+# --- Call claude ---
+
+TMPFILE=$(mktemp)
+trap 'rm -f "$TMPFILE"' EXIT
+
+cat > "$TMPFILE" <<PROMPT
+You are a code review assistant. You explain git diffs top-down — like a teammate walking someone through a PR.
+
+You will receive a unified diff. Analyze it and explain the changes.
+
+Rules:
+1. Group changes by INTENT (what the developer was trying to achieve), not by file.
+2. A single file may appear in multiple groups if it serves multiple purposes.
+3. Risk levels: "low" for safe refactors/docs/tests, "medium" for logic changes, "high" for error handling, concurrency, auth, data mutations, or public APIs.
+4. The summary should help someone understand the change WITHOUT reading the diff.
+
+$(level_instructions)
+
+$(format_instructions)
+
+Here is the diff:
+
+\`\`\`diff
+${DIFF}
+\`\`\`
+PROMPT
+
+claude -p < "$TMPFILE"
