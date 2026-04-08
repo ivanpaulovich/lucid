@@ -197,6 +197,10 @@ if ! command -v claude >/dev/null 2>&1; then
 fi
 
 # --- Cache ---
+# Skip cache entirely for --ask and --context (every question is unique)
+if [ -n "$ASK" ] || [ -n "$CONTEXT" ] || [ -n "$CONTEXT_FILE" ]; then
+  NO_CACHE=1
+fi
 
 DIFF_HASH=$(printf '%s' "$DIFF" | compute_md5)
 if [ -n "$FILE" ]; then
