@@ -655,12 +655,10 @@ def SpinnerTick(timer_id: number)
   var moon_idx = (elapsed / 3) % len(MOON)
 
   # Update statusline
-  status_text = SPINNER[spinner_idx] .. ' ' .. spinner_label .. ' ' .. elapsed_str
+  status_text = SPINNER[spinner_idx] .. '  analyzing ' .. spinner_label .. '...  ' .. elapsed_str
 
   var lines: list<string> = ['']
   lines += MOON[moon_idx]
-  add(lines, '')
-  add(lines, '  ' .. SPINNER[spinner_idx] .. '  analyzing ' .. spinner_label .. '...  ' .. elapsed_str)
   add(lines, '')
   add(lines, '  ' .. TIPS[tip_idx])
 
