@@ -562,10 +562,28 @@ enddef
 
 # --- Spinner ---
 
+const TIPS = [
+  'Tip: press e on any file in :Git to explain it',
+  'Tip: press x in :Git to mark a file as reviewed',
+  'Tip: \ln on a line to add a PR comment',
+  'Tip: \la to add code to chat context, \lc to ask',
+  'Tip: :LucidPR 42 to review a PR without checkout',
+  'Tip: create ~/.config/lucid/prompt.txt to customize reviews',
+  'Tip: lucid --ask "is this safe?" from the terminal',
+  'Tip: :LucidClearCache if results seem stale',
+]
+var spinner_start: list<number> = []
+
 def StartSpinner(label: string)
   spinner_idx = 0
   spinner_label = label
-  SetBufContent(explain_bufnr, [SPINNER[0] .. '  analyzing ' .. label .. '...'])
+  spinner_start = reltime()
+  SetBufContent(explain_bufnr, [
+    '',
+    '  ' .. SPINNER[0] .. '  analyzing ' .. label .. '...',
+    '',
+    '  ' .. TIPS[0],
+  ])
   StopSpinner()
   spinner_timer = timer_start(200, function('SpinnerTick'), {repeat: -1})
 enddef
@@ -581,8 +599,21 @@ def SpinnerTick(timer_id: number)
     StopSpinner()
     return
   endif
+
+  var elapsed = float2nr(reltimefloat(reltime(spinner_start)))
+  var elapsed_str = elapsed < 60 ? string(elapsed) .. 's' : string(elapsed / 60) .. 'm ' .. string(elapsed % 60) .. 's'
+  var tip_idx = (elapsed / 5) % len(TIPS)
+
+  var lines = [
+    '',
+    '  ' .. SPINNER[spinner_idx] .. '  analyzing ' .. spinner_label .. '...  (' .. elapsed_str .. ')',
+    '',
+    '  ' .. TIPS[tip_idx],
+  ]
+
   win_execute(winid, 'setlocal modifiable')
-  setbufline(explain_bufnr, 1, SPINNER[spinner_idx] .. '  analyzing ' .. spinner_label .. '...')
+  win_execute(winid, 'silent :1,$delete _')
+  setbufline(explain_bufnr, 1, lines)
   win_execute(winid, 'setlocal nomodifiable')
 enddef
 
