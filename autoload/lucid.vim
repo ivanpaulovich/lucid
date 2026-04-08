@@ -563,27 +563,75 @@ enddef
 # --- Spinner ---
 
 const TIPS = [
-  'Tip: press e on any file in :Git to explain it',
-  'Tip: press x in :Git to mark a file as reviewed',
-  'Tip: \ln on a line to add a PR comment',
-  'Tip: \la to add code to chat context, \lc to ask',
-  'Tip: :LucidPR 42 to review a PR without checkout',
-  'Tip: create ~/.config/lucid/prompt.txt to customize reviews',
-  'Tip: lucid --ask "is this safe?" from the terminal',
-  'Tip: :LucidClearCache if results seem stale',
+  'press e on any file in :Git to explain it',
+  'press x in :Git to mark a file as reviewed',
+  '\ln on a line to add a PR comment',
+  '\la to add code to chat context, \lc to ask',
+  ':LucidPR 42 to review a PR without checkout',
+  '~/.config/lucid/prompt.txt to customize reviews',
+  'lucid --ask "is this safe?" from the terminal',
+  ':LucidClearCache if results seem stale',
 ]
+
+# Moon phases animation — fits the Lunar theme
+const MOON = [
+  [
+    '         .  *  .        ',
+    '      .    🌑    .     ',
+    '    *    new moon    *  ',
+    '      .          .     ',
+  ],
+  [
+    '         .  *  .        ',
+    '      .    🌒    .     ',
+    '   *  waxing crescent *',
+    '      .          .     ',
+  ],
+  [
+    '         .  *  .        ',
+    '      .    🌓    .     ',
+    '    * first quarter  *  ',
+    '      .          .     ',
+  ],
+  [
+    '         .  *  .        ',
+    '      .    🌔    .     ',
+    '    * waxing gibbous *  ',
+    '      .          .     ',
+  ],
+  [
+    '         .  *  .        ',
+    '      .    🌕    .     ',
+    '    *   full moon    *  ',
+    '      .          .     ',
+  ],
+  [
+    '         .  *  .        ',
+    '      .    🌖    .     ',
+    '    * waning gibbous *  ',
+    '      .          .     ',
+  ],
+  [
+    '         .  *  .        ',
+    '      .    🌗    .     ',
+    '    *  last quarter  *  ',
+    '      .          .     ',
+  ],
+  [
+    '         .  *  .        ',
+    '      .    🌘    .     ',
+    '   *  waning crescent *',
+    '      .          .     ',
+  ],
+]
+
 var spinner_start: list<number> = []
 
 def StartSpinner(label: string)
   spinner_idx = 0
   spinner_label = label
   spinner_start = reltime()
-  SetBufContent(explain_bufnr, [
-    '',
-    '  ' .. SPINNER[0] .. '  analyzing ' .. label .. '...',
-    '',
-    '  ' .. TIPS[0],
-  ])
+  SetBufContent(explain_bufnr, ['', '  ' .. SPINNER[0] .. '  analyzing ' .. label .. '...'])
   StopSpinner()
   spinner_timer = timer_start(200, function('SpinnerTick'), {repeat: -1})
 enddef
@@ -603,13 +651,14 @@ def SpinnerTick(timer_id: number)
   var elapsed = float2nr(reltimefloat(reltime(spinner_start)))
   var elapsed_str = elapsed < 60 ? string(elapsed) .. 's' : string(elapsed / 60) .. 'm ' .. string(elapsed % 60) .. 's'
   var tip_idx = (elapsed / 5) % len(TIPS)
+  var moon_idx = (elapsed / 3) % len(MOON)
 
-  var lines = [
-    '',
-    '  ' .. SPINNER[spinner_idx] .. '  analyzing ' .. spinner_label .. '...  (' .. elapsed_str .. ')',
-    '',
-    '  ' .. TIPS[tip_idx],
-  ]
+  var lines: list<string> = ['']
+  lines += MOON[moon_idx]
+  add(lines, '')
+  add(lines, '  ' .. SPINNER[spinner_idx] .. '  analyzing ' .. spinner_label .. '...  ' .. elapsed_str)
+  add(lines, '')
+  add(lines, '  ' .. TIPS[tip_idx])
 
   win_execute(winid, 'setlocal modifiable')
   win_execute(winid, 'silent :1,$delete _')
