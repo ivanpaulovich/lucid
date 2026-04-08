@@ -26,6 +26,7 @@ var reviewed_files: dict<bool> = {}
 var context_items: list<dict<any>> = []
 var review_comments: list<dict<any>> = []
 var current_pr: string = ''
+var status_text: string = ''
 
 # --- Explain callbacks ---
 
@@ -653,6 +654,9 @@ def SpinnerTick(timer_id: number)
   var tip_idx = (elapsed / 5) % len(TIPS)
   var moon_idx = (elapsed / 3) % len(MOON)
 
+  # Update statusline
+  status_text = SPINNER[spinner_idx] .. ' ' .. spinner_label .. ' ' .. elapsed_str
+
   var lines: list<string> = ['']
   lines += MOON[moon_idx]
   add(lines, '')
@@ -671,9 +675,14 @@ def StopSpinner()
     timer_stop(spinner_timer)
     spinner_timer = -1
   endif
+  status_text = ''
 enddef
 
 # --- Log ---
+
+export def Status(): string
+  return status_text
+enddef
 
 export def ShowLog()
   EnsureExplain()
