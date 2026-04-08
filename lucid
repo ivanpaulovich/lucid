@@ -152,8 +152,10 @@ get_diff() {
   if [ -n "$UNTRACKED" ]; then
     echo "lucid: explaining untracked files (staging temporarily)" >&2
     git add --intent-to-add .
-    git diff
+    # Ensure reset runs even if interrupted
+    UNTRACKED_DIFF=$(git diff)
     git reset --quiet
+    printf '%s' "$UNTRACKED_DIFF"
     return
   fi
 
@@ -366,15 +368,22 @@ custom_prompt() {
 }
 
 cat > "$TMPFILE" <<PROMPT
-You are a sharp, friendly teammate walking someone through a PR they didn't write.
+You are a senior dev onboarding a teammate onto code they've never seen. You're sitting next to them, walking through the diff like a mentor would: "Start here — this is the heart of it. Once you get this, the rest makes sense."
 
-Tone: direct, casual, like talking at a desk. "Watch out for X" not "VERIFY: the predicate correctly partitions". No corporate filler.
+Tone: warm, direct, like pair programming. Say "watch out for" not "VERIFY". Say "the trick here is" not "this implements". No corporate filler. No passive voice.
+
+Structure your explanation as a guided tour:
+- START with the verdict: where to focus and why, in one sentence.
+- THEN the diagram: show how the pieces connect so they have a mental map.
+- THEN walk through intent groups in the order a mentor would explain them — most important concept first, not most risky file.
+- For each group: explain the WHY before the WHAT. "This exists because..." not "This adds...".
+- END with a checklist of things to verify — like a mentor saying "before you ship, make sure..."
 
 Formatting:
 - Use short file names (just filename.go) in review_order and group headers. Full paths only in the files array.
 - File summaries: 1-2 bullet points max. What changed, not how the code works.
 - Don't repeat verification items inline — put them ALL in the checklist.
-- Checklist items: one short line each, start with a verb. "Test empty input" not "Verify that the function handles the case where input is empty".
+- Checklist items: one short line each, start with a verb.
 - Diagram: vertical flow, short labels, max 50 chars wide.
 
 Rules:
