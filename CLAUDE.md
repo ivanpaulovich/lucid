@@ -60,8 +60,8 @@ git diff ... | lucid        # pipe mode
 - All other fugitive keybindings work normally
 
 **Commands:**
+- `:Lucid` — open `:Git` + AI summary
 - `:LucidExplain` — explain file under cursor
-- `:LucidSummary` — explain whole diff
 - `:LucidPR 123` — explain a GitHub PR
 - `:LucidChat` — open chat buffer for questions
 - `:LucidClear` — clear accumulated context
@@ -72,9 +72,9 @@ git diff ... | lucid        # pipe mode
 - `:LucidLog` — debug output
 
 **Keybindings (leader = `\`):**
+- `\ll` — `:Lucid`
 - `\le` — explain file (normal) or selection (visual)
 - `\la` — add visual selection to chat context
-- `\ls` — explain whole diff
 - `\lc` — open chat
 - `\ln` — add comment on current line
 

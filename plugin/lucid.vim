@@ -20,8 +20,8 @@ else
   g:lucid_bin = 'lucid'
 endif
 
+command! Lucid lucid#Start()
 command! LucidExplain lucid#Explain('full')
-command! LucidSummary lucid#ExplainOverview()
 command! -nargs=1 LucidPR lucid#ReviewPR(<q-args>)
 command! LucidChat lucid#OpenChat()
 command! LucidClear lucid#ClearContext()
@@ -38,16 +38,16 @@ augroup lucid_fugitive
 augroup END
 
 if !hasmapto('<Plug>(lucid-explain)')
+  nmap <leader>ll <Plug>(lucid-start)
   nmap <leader>le <Plug>(lucid-explain)
-  nmap <leader>ls <Plug>(lucid-summary)
   nmap <leader>lc <Plug>(lucid-chat)
   nmap <leader>ln <Plug>(lucid-comment)
   xmap <leader>la <Plug>(lucid-add)
   xmap <leader>le <Plug>(lucid-visual-explain)
 endif
 
+nnoremap <silent> <Plug>(lucid-start) <ScriptCmd>lucid#Start()<CR>
 nnoremap <silent> <Plug>(lucid-explain) <ScriptCmd>lucid#Explain('full')<CR>
-nnoremap <silent> <Plug>(lucid-summary) <ScriptCmd>lucid#ExplainOverview()<CR>
 nnoremap <silent> <Plug>(lucid-chat) <ScriptCmd>lucid#OpenChat()<CR>
 nnoremap <silent> <Plug>(lucid-comment) <ScriptCmd>lucid#AddComment()<CR>
 xnoremap <silent> <Plug>(lucid-add) <Esc><ScriptCmd>lucid#AddContext()<CR>

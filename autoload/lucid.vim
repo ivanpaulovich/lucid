@@ -62,6 +62,11 @@ enddef
 
 # --- Public API ---
 
+export def Start()
+  silent! execute 'Git'
+  ExplainAll()
+enddef
+
 export def Explain(level: string)
   var path = expand('%:p:.')
   if path != ''

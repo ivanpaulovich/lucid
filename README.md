@@ -77,14 +77,13 @@ make install PREFIX=~/.local   # without sudo
 
 ### In Vim (recommended)
 
-Open `:Git` (fugitive) to see your changed files, then:
+`:Lucid` or `\ll` opens `:Git` with an AI summary. Then:
 
 | Key | Action |
 |-----|--------|
 | `e` | Explain file under cursor |
 | `x` | Mark file as reviewed ✓ |
 | `\ln` | Add comment on current line 💬 |
-| `\ls` | Overview of the whole diff |
 | `\le` | Explain current file (from any buffer) |
 | `\lc` | Open chat |
 | `\la` | Add visual selection to chat context |
@@ -135,8 +134,8 @@ lucid --list                  # list changed files (instant)
 
 | Command | Description |
 |---------|-------------|
+| `:Lucid` | Open `:Git` + AI summary |
 | `:LucidExplain` | Explain file under cursor |
-| `:LucidSummary` | Explain the whole diff |
 | `:LucidPR 123` | Explain a GitHub PR |
 | `:LucidChat` | Open chat buffer |
 | `:LucidClear` | Clear chat context |
