@@ -62,9 +62,16 @@ enddef
 
 # --- Public API ---
 
-export def Start()
+export def Start(target: string = '')
   silent! execute 'Git'
-  ExplainAll()
+  if target != ''
+    EnsureExplain()
+    StartSpinner(target)
+    var cmd = Bin() .. ' --format json ' .. shellescape(target) .. ' < /dev/null'
+    FetchExplanation(cmd, target)
+  else
+    ExplainAll()
+  endif
 enddef
 
 export def Explain(level: string)

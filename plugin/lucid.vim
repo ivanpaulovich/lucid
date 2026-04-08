@@ -20,7 +20,7 @@ else
   g:lucid_bin = 'lucid'
 endif
 
-command! Lucid lucid#Start()
+command! -nargs=? Lucid lucid#Start(<q-args>)
 command! LucidExplain lucid#Explain('full')
 command! -nargs=1 LucidPR lucid#ReviewPR(<q-args>)
 command! LucidChat lucid#OpenChat()

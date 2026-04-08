@@ -32,7 +32,7 @@ lucid/
 ## CLI flags
 
 ```
-lucid                       # auto-detect: staged > unstaged > untracked > last commit
+lucid                       # auto-detect: staged > unstaged > untracked > entire repo
 lucid <commit>              # explain a specific commit
 lucid <commit>..<commit>    # explain a range
 lucid --pr 123              # explain a GitHub PR (requires gh)
