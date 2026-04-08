@@ -4,9 +4,19 @@ set -e
 # lucid — explain git diffs using AI
 # Requires: claude (Claude Code CLI)
 
-VERSION="0.2.0"
+VERSION="0.6.0"
 LEVEL="default"
 FORMAT="terminal"
+FILE=""
+CONTEXT=""
+ASK=""
+CONTEXT_FILE=""
+PR=""
+TARGET=""
+LIST_ONLY=0
+NO_CACHE=0
+CACHE_DIR="${LUCID_CACHE_DIR:-$HOME/.cache/lucid}"
+PROMPT_FILE="${LUCID_PROMPT:-$HOME/.config/lucid/prompt.txt}"
 MAX_DIFF_BYTES=80000
 
 usage() {
@@ -23,61 +33,103 @@ Targets (optional — auto-detects if omitted):
   git diff ... | lucid      read diff from stdin (pipe mode)
 
 Flags:
-  --format   terminal (default) or json
-  --level    summary, default, or full
-  --pr       explain a GitHub pull request by number
-  --version  print version
-  --help     show this help
+  --format    terminal (default) or json
+  --level     summary, default, or full
+  --file      explain changes in a single file only
+  --context   additional context (e.g. selected code) to focus the explanation
+  --context-file  read context from a file (for large/multiple selections)
+  --ask       ask a specific question about the diff/context
+  --pr        explain a GitHub pull request by number
+  --list      list changed files with stats (no LLM, instant)
+  --no-cache  skip cache, force fresh LLM call
+  --clear-cache  delete all cached responses
+  --prompt    path to custom prompt file (default: ~/.config/lucid/prompt.txt)
+  --version   print version
+  --help      show this help
 EOF
 }
 
-PR=""
-TARGET=""
-
 while [ $# -gt 0 ]; do
   case "$1" in
-    --level)   LEVEL="$2"; shift 2 ;;
-    --format)  FORMAT="$2"; shift 2 ;;
-    --pr)      PR="$2"; shift 2 ;;
-    --version) echo "lucid $VERSION"; exit 0 ;;
-    --help|-h) usage; exit 0 ;;
-    -*)        echo "lucid: unknown flag: $1" >&2; exit 1 ;;
-    *)         TARGET="$1"; shift ;;
+    --clear-cache) rm -rf "$CACHE_DIR" && echo "lucid: cache cleared" && exit 0 ;;
+    --level)    LEVEL="$2"; shift 2 ;;
+    --format)   FORMAT="$2"; shift 2 ;;
+    --file)     FILE="$2"; shift 2 ;;
+    --context)  CONTEXT="$2"; shift 2 ;;
+    --context-file) CONTEXT_FILE="$2"; shift 2 ;;
+    --ask)      ASK="$2"; shift 2 ;;
+    --pr)       PR="$2"; shift 2 ;;
+    --list)     LIST_ONLY=1; shift ;;
+    --no-cache) NO_CACHE=1; shift ;;
+    --prompt)   PROMPT_FILE="$2"; shift 2 ;;
+    --version)  echo "lucid $VERSION"; exit 0 ;;
+    --help|-h)  usage; exit 0 ;;
+    -*)         echo "lucid: unknown flag: $1" >&2; exit 1 ;;
+    *)          TARGET="$1"; shift ;;
   esac
 done
 
-if ! command -v claude >/dev/null 2>&1; then
-  echo "lucid: 'claude' CLI not found. Install Claude Code first:" >&2
-  echo "  https://docs.anthropic.com/en/docs/claude-code" >&2
-  exit 1
-fi
+# --- Hash helper (macOS + Linux) ---
+
+compute_md5() {
+  if command -v md5 >/dev/null 2>&1; then
+    md5 -q
+  else
+    md5sum | cut -d' ' -f1
+  fi
+}
 
 # --- Resolve diff ---
 
 get_diff() {
-  # Pipe mode: stdin is not a terminal
   if [ ! -t 0 ]; then
-    cat
-    return
+    PIPED=$(cat)
+    if [ -n "$(printf '%s' "$PIPED" | tr -d '[:space:]')" ]; then
+      printf '%s' "$PIPED"
+      return
+    fi
   fi
 
-  # PR mode
   if [ -n "$PR" ]; then
     if ! command -v gh >/dev/null 2>&1; then
       echo "lucid: 'gh' CLI required for --pr. Install: https://cli.github.com" >&2
       exit 1
     fi
-    gh pr diff "$PR"
+    if [ -n "$FILE" ]; then
+      gh pr diff "$PR" -- "$FILE"
+    else
+      gh pr diff "$PR"
+    fi
     return
   fi
 
-  # Explicit target: commit or range
+  if [ -n "$FILE" ]; then
+    STAGED=$(git diff --cached -- "$FILE" 2>/dev/null)
+    if [ -n "$STAGED" ]; then
+      echo "lucid: explaining staged changes in $FILE" >&2
+      printf '%s' "$STAGED"
+      return
+    fi
+    UNSTAGED=$(git diff -- "$FILE" 2>/dev/null)
+    if [ -n "$UNSTAGED" ]; then
+      echo "lucid: explaining unstaged changes in $FILE" >&2
+      printf '%s' "$UNSTAGED"
+      return
+    fi
+    if [ -n "$TARGET" ]; then
+      git diff "$TARGET" -- "$FILE"
+    else
+      echo "lucid: explaining last commit changes in $FILE" >&2
+      git diff HEAD~1 -- "$FILE"
+    fi
+    return
+  fi
+
   if [ -n "$TARGET" ]; then
     git diff "$TARGET"
     return
   fi
 
-  # Auto-detect: staged > unstaged > last commit
   STAGED=$(git diff --cached --stat 2>/dev/null)
   if [ -n "$STAGED" ]; then
     echo "lucid: explaining staged changes" >&2
@@ -92,7 +144,6 @@ get_diff() {
     return
   fi
 
-  # Nothing staged or unstaged — check for untracked files
   UNTRACKED=$(git ls-files --others --exclude-standard 2>/dev/null)
   if [ -n "$UNTRACKED" ]; then
     echo "lucid: explaining untracked files (staging temporarily)" >&2
@@ -102,7 +153,6 @@ get_diff() {
     return
   fi
 
-  # Fall back to last commit
   echo "lucid: explaining last commit" >&2
   git diff HEAD~1
 }
@@ -110,6 +160,50 @@ get_diff() {
 DIFF=$(get_diff)
 if [ -z "$(printf '%s' "$DIFF" | tr -d '[:space:]')" ]; then
   echo "lucid: no changes to explain" >&2
+  exit 0
+fi
+
+# --- List mode (no LLM) ---
+
+if [ "$LIST_ONLY" = "1" ]; then
+  printf '%s\n' "$DIFF" | awk '
+    /^diff --git / {
+      if (file != "") printf "%s\t%s\t+%d\t-%d\n", status, file, adds, dels
+      file = $0; sub(/.*b\//, "", file)
+      status = "M"; adds = 0; dels = 0
+    }
+    /^new file mode/    { status = "A" }
+    /^deleted file mode/ { status = "D" }
+    /^rename from/       { status = "R" }
+    /^\+[^+]/           { adds++ }
+    /^-[^-]/            { dels++ }
+    END { if (file != "") printf "%s\t%s\t+%d\t-%d\n", status, file, adds, dels }
+  '
+  exit 0
+fi
+
+# --- Check for claude (only needed for LLM calls) ---
+
+if ! command -v claude >/dev/null 2>&1; then
+  echo "lucid: 'claude' CLI not found. Install Claude Code first:" >&2
+  echo "  https://docs.anthropic.com/en/docs/claude-code" >&2
+  exit 1
+fi
+
+# --- Cache ---
+
+DIFF_HASH=$(printf '%s' "$DIFF" | compute_md5)
+if [ -n "$FILE" ]; then
+  FILE_HASH=$(printf '%s' "$FILE" | compute_md5)
+  CACHE_KEY="${DIFF_HASH}-${FILE_HASH}"
+else
+  CACHE_KEY="$DIFF_HASH"
+fi
+CACHE_FILE="$CACHE_DIR/${CACHE_KEY}-${LEVEL}-${FORMAT}.json"
+
+if [ "$NO_CACHE" = "0" ] && [ -f "$CACHE_FILE" ]; then
+  echo "lucid: cache hit" >&2
+  cat "$CACHE_FILE"
   exit 0
 fi
 
@@ -122,7 +216,6 @@ truncate_diff() {
   printf '\n\n[... diff truncated at %s bytes. Total size: %s bytes.]\n' "$MAX_DIFF_BYTES" "$DIFF_SIZE"
 }
 
-# For very large diffs, prepend a file-level summary and truncate
 if [ "$DIFF_SIZE" -gt "$MAX_DIFF_BYTES" ]; then
   FILE_SUMMARY=$(printf '%s' "$DIFF" | grep '^diff --git' | sed 's|diff --git a/\(.*\) b/.*|\1|')
   DIFF_HEADER="This is a LARGE diff (${DIFF_SIZE} bytes, truncated to ${MAX_DIFF_BYTES}).
@@ -144,27 +237,27 @@ level_instructions() {
     summary)
       cat <<'EOF'
 Provide ONLY:
-- A 1-2 sentence summary
-- Intent groups with name, description, and risk level
+- One sentence: what changed and why
+- Intent groups with: name, risk level, what to verify during review
 - Do NOT list individual files or hunks
 EOF
       ;;
     full)
       cat <<'EOF'
-Provide FULL detail:
-- A 1-2 sentence summary
-- Intent groups with description and risk level
-- Per-file summaries within each group
-- For each file, annotate the key hunks: what lines changed and why
+Provide:
+- One sentence: what changed and why
+- Intent groups with risk level and review guidance
+- Per-file: what changed and what the reviewer should check
+- Key hunks: line range + what to verify (not what the code does — what could go wrong)
 EOF
       ;;
     *)
       cat <<'EOF'
 Provide:
-- A 1-2 sentence summary
-- Intent groups with description and risk level
-- Per-file summaries within each group
-- Do NOT annotate individual hunks
+- One sentence: what changed and why
+- Intent groups with risk level and review guidance
+- Per-file: what changed and what the reviewer should check
+- No hunk-level detail
 EOF
       ;;
   esac
@@ -174,14 +267,18 @@ format_instructions() {
   case "$FORMAT" in
     json)
       cat <<'EOF'
-Respond ONLY with valid JSON matching this schema (no markdown fences):
+Respond ONLY with valid JSON (no markdown fences):
 {
-  "summary": "string",
+  "summary": "one sentence, casual tone",
+  "verdict": "one sentence — where to focus and why",
+  "diagram": "vertical ASCII flow, max 50 chars wide, max 10 lines, short labels",
+  "review_order": ["filename.go (short name)", "next.go", "skip trivial"],
+  "checklist": ["short actionable item starting with a verb", "test X", "check Y"],
   "intent_groups": [
     {
       "intent": "short name",
-      "description": "1-2 sentences",
-      "files": [{"path": "string", "summary": "string", "hunks": [{"start_line": 0, "end_line": 0, "annotation": "string"}]}],
+      "description": "2-3 sentences max. What changed and why. No inline verification.",
+      "files": [{"path": "full/path.go", "summary": "1-2 bullet points: what changed", "hunks": [{"start_line": 0, "end_line": 0, "annotation": "what changed here"}]}],
       "risk": "low|medium|high"
     }
   ],
@@ -192,21 +289,55 @@ EOF
       ;;
     *)
       cat <<'EOF'
-Format your response as plain text for a terminal:
+Format as plain text for a terminal. Casual tone, like a teammate at a desk.
 
-Start with a 1-2 sentence summary.
+  Summary: one sentence.
+  Verdict: one sentence — where to focus and why.
 
-Then list each intent group as:
+  Diagram: vertical ASCII flow, max 50 chars wide, short labels.
 
-  [N] Intent Name  (risk: low/medium/high)
-      Description of what this group of changes achieves.
-      Files: path/to/file1, path/to/file2
+  Review order (short filenames, numbered):
+  1. file.go
+  2. other.go
 
-Number groups sequentially. Keep it concise and scannable.
-Do not use markdown. Do not use headers with #. Just clean indented text.
+  [N] Intent Name  (risk)
+      2-3 sentences max. What changed and why. No inline checks.
+      Files: file1.go, file2.go
+
+  Checklist:
+  [ ] short verb phrase
+  [ ] test X
+  [ ] check Y
+
+No markdown. No headers. Keep file descriptions short — put all verification in the checklist.
 EOF
       ;;
   esac
+}
+
+context_instructions() {
+  # Load context from file if specified
+  if [ -n "$CONTEXT_FILE" ] && [ -f "$CONTEXT_FILE" ]; then
+    CONTEXT=$(cat "$CONTEXT_FILE")
+  fi
+
+  if [ -n "$CONTEXT" ]; then
+    cat <<EOF
+The user has provided code selections for context:
+
+${CONTEXT}
+
+EOF
+  fi
+
+  if [ -n "$ASK" ]; then
+    cat <<EOF
+Answer this question directly. Be terse. Use the diff and context to inform your answer.
+
+Question: ${ASK}
+
+EOF
+  fi
 }
 
 # --- Call claude ---
@@ -214,26 +345,79 @@ EOF
 TMPFILE=$(mktemp)
 trap 'rm -f "$TMPFILE"' EXIT
 
-cat > "$TMPFILE" <<PROMPT
-You are a code review assistant. You explain git diffs top-down — like a teammate walking someone through a PR.
+# --- Custom prompt ---
 
-You will receive a unified diff. Analyze it and explain the changes.
+custom_prompt() {
+  if [ -f "$PROMPT_FILE" ]; then
+    printf '\nAdditional review instructions:\n'
+    cat "$PROMPT_FILE"
+    printf '\n'
+  fi
+}
+
+cat > "$TMPFILE" <<PROMPT
+You are a sharp, friendly teammate walking someone through a PR they didn't write.
+
+Tone: direct, casual, like talking at a desk. "Watch out for X" not "VERIFY: the predicate correctly partitions". No corporate filler.
+
+Formatting:
+- Use short file names (just filename.go) in review_order and group headers. Full paths only in the files array.
+- File summaries: 1-2 bullet points max. What changed, not how the code works.
+- Don't repeat verification items inline — put them ALL in the checklist.
+- Checklist items: one short line each, start with a verb. "Test empty input" not "Verify that the function handles the case where input is empty".
+- Diagram: vertical flow, short labels, max 50 chars wide.
 
 Rules:
-1. Group changes by INTENT (what the developer was trying to achieve), not by file.
-2. A single file may appear in multiple groups if it serves multiple purposes.
-3. Risk levels: "low" for safe refactors/docs/tests, "medium" for logic changes, "high" for error handling, concurrency, auth, data mutations, or public APIs.
-4. The summary should help someone understand the change WITHOUT reading the diff.
+1. Group by INTENT, not by file.
+2. Risk: "low" = safe refactor/docs/tests. "medium" = logic changes. "high" = error handling, concurrency, auth, data mutations, public APIs.
+3. Flag anything suspicious — but in the checklist, not inline.
+4. Keep file descriptions to WHAT changed. Put WHAT TO CHECK in the checklist only.
+$(custom_prompt)
 
 $(level_instructions)
 
 $(format_instructions)
+
+$(context_instructions)
 
 Here is the diff:
 
 \`\`\`diff
 ${DIFF}
 \`\`\`
+
+$([ "$FORMAT" = "json" ] && echo 'IMPORTANT: Your entire response must be valid JSON. No text before or after. No markdown fences. Start with { and end with }.')
 PROMPT
 
-claude -p < "$TMPFILE"
+# Run from /tmp to avoid project CLAUDE.md. --no-session-persistence to avoid context bleed.
+RAW_OUTPUT=$(cd /tmp && claude -p --no-session-persistence < "$TMPFILE")
+
+# Extract JSON from response — the LLM sometimes wraps it in markdown or adds text
+if [ "$FORMAT" = "json" ]; then
+  # Try to extract JSON: find first { to last }
+  OUTPUT=$(printf '%s' "$RAW_OUTPUT" | awk '/^{/{found=1} found{buf=buf $0 "\n"} /^}/{if(found){printf "%s",buf; buf=""; found=0}}')
+  if [ -z "$OUTPUT" ]; then
+    # Try stripping markdown fences
+    OUTPUT=$(printf '%s' "$RAW_OUTPUT" | sed -n '/^```/,/^```/p' | sed '1d;$d')
+  fi
+  if [ -z "$OUTPUT" ] || ! printf '%s' "$OUTPUT" | head -c 1 | grep -q '{'; then
+    OUTPUT="$RAW_OUTPUT"
+  fi
+else
+  OUTPUT="$RAW_OUTPUT"
+fi
+
+# Cache the response (skip if --no-cache or invalid JSON)
+if [ "$NO_CACHE" = "0" ]; then
+  if [ "$FORMAT" = "json" ]; then
+    if printf '%s' "$OUTPUT" | head -c 1 | grep -q '{'; then
+      mkdir -p "$CACHE_DIR"
+      printf '%s' "$OUTPUT" > "$CACHE_FILE"
+    fi
+  else
+    mkdir -p "$CACHE_DIR"
+    printf '%s' "$OUTPUT" > "$CACHE_FILE"
+  fi
+fi
+
+printf '%s' "$OUTPUT"

@@ -2,275 +2,119 @@
 
 ## What is this project?
 
-`lucid` is a CLI tool + Vim 9 plugin that explains git diffs using AI. When developers use AI coding tools (Claude Code, Amp, Cursor, etc.) to generate code, they end up with changes they didn't write. `lucid` explains those changes top-down — like a teammate walking you through a PR — so developers stay in control of their codebase.
+`lucid` is a CLI tool + Vim 9 plugin that helps developers review git diffs they didn't write. It groups changes by intent, assigns risk levels, and tells the reviewer what to verify — like a senior teammate walking you through a PR.
 
-It is **not** a diff viewer. It is an **explainer**. The output is structured, human-friendly explanations grouped by intent, not hunk-by-hunk raw diffs.
+It is **not** a diff viewer. It is a **reviewer's assistant**.
 
 ## Tech stack
 
-- **Go** for the CLI
+- **POSIX shell** for the CLI (delegates to `claude` CLI for LLM calls)
 - **Vim9script** for the Vim 9 plugin
-- No frameworks. Standard library + minimal dependencies.
+- No frameworks. No dependencies beyond `claude` CLI.
 
 ## Architecture
 
-Two parts:
-1. **Go CLI** (`lucid`) — reads a diff from stdin, sends it to an LLM, outputs a structured top-down explanation as JSON or pretty-printed terminal output.
-2. **Vim9script plugin** — calls the Go binary via `job_start()`, displays results using popup windows and text properties.
-
-The LLM backend is pluggable via an interface. Users configure which provider they want in `~/.lucid.yaml`.
-
----
-
-## Implementation Plan
-
-### Phase 1: Project scaffold
-
-Create the Go module and directory structure:
+The `claude` CLI is already installed and authenticated. We don't need API keys, HTTP clients, or config files. The prompt is the product.
 
 ```
 lucid/
-├── cmd/lucid/main.go
-├── internal/
-│   ├── diff/parser.go
-│   ├── explain/
-│   │   ├── explainer.go
-│   │   ├── prompt.go
-│   │   └── claude.go
-│   ├── model/types.go
-│   └── output/
-│       ├── terminal.go
-│       └── json.go
-├── config/config.go
-├── vim/
-│   ├── plugin/lucid.vim
-│   └── autoload/lucid.vim
-├── go.mod
+├── lucid                      # POSIX shell script — the CLI
+├── plugin/lucid.vim           # commands, keybindings, g:lucid_bin path resolution
+├── autoload/lucid.vim         # explain, chat, fugitive integration
+├── Makefile                   # install/uninstall/test
 └── README.md
 ```
 
-- Initialize Go module: `github.com/lunar/lucid` (or whatever org).
-- No external dependencies yet. Use `net/http` for API calls, `encoding/json` for parsing.
-- Create a `Makefile` with `build`, `test`, `install` targets.
+**Shell CLI** (`lucid`) — resolves a diff (auto-detect, commit, PR, file), caches responses, sends to `claude -p` with a review-oriented prompt, outputs text or JSON.
 
-### Phase 2: Core types
+**Vim plugin** — integrates with vim-fugitive's `:Git` buffer. Adds `e` (explain file) and `x` (mark reviewed ✓) keybindings. Provides an explain buffer for AI output and a chat buffer for questions with accumulated code context. Uses `g:lucid_bin` to call the CLI from the plugin's own repo directory — no PATH install needed.
 
-Define the data model in `internal/model/types.go`:
+## CLI flags
 
-```go
-package model
+```
+lucid                       # auto-detect: staged > unstaged > untracked > last commit
+lucid <commit>              # explain a specific commit
+lucid <commit>..<commit>    # explain a range
+lucid --pr 123              # explain a GitHub PR (requires gh)
+git diff ... | lucid        # pipe mode
 
-type Explanation struct {
-    Summary      string        `json:"summary"`
-    IntentGroups []IntentGroup `json:"intent_groups"`
-    Stats        DiffStats     `json:"stats"`
-}
-
-type IntentGroup struct {
-    Intent      string       `json:"intent"`
-    Description string       `json:"description"`
-    Files       []FileChange `json:"files"`
-    Risk        string       `json:"risk"`
-}
-
-type FileChange struct {
-    Path    string `json:"path"`
-    Summary string `json:"summary"`
-    Hunks   []Hunk `json:"hunks"`
-}
-
-type Hunk struct {
-    StartLine  int    `json:"start_line"`
-    EndLine    int    `json:"end_line"`
-    RawDiff    string `json:"raw_diff"`
-    Annotation string `json:"annotation"`
-}
-
-type DiffStats struct {
-    FilesChanged int `json:"files_changed"`
-    Additions    int `json:"additions"`
-    Deletions    int `json:"deletions"`
-}
+--format       terminal | json
+--level        summary | default | full
+--file         explain one file's changes only
+--list         list changed files with stats (no LLM, instant)
+--ask          ask a question about the diff
+--context      inline code context
+--context-file read context from file
+--prompt       path to custom prompt file
+--no-cache     skip ~/.cache/lucid/ cache
+--clear-cache  delete all cached responses
 ```
 
-### Phase 3: Diff parser
+## Vim plugin
 
-Implement `internal/diff/parser.go`.
+**Requires:** Vim 9.0+, vim-fugitive
 
-- Read unified diff format from stdin.
-- Parse into a structured representation: list of files, each with a list of hunks.
-- Extract file paths from `--- a/` and `+++ b/` lines.
-- Extract hunk headers from `@@ -n,n +n,n @@` lines.
-- Count additions (`+` lines) and deletions (`-` lines) for stats.
-- Return a `ParsedDiff` struct that the explainer can consume.
-- Handle edge cases: new files, deleted files, renamed files, binary files.
+**In `:Git` buffer:**
+- `e` — explain file under cursor (AI)
+- `x` — toggle reviewed ✓ sign
+- All other fugitive keybindings work normally
 
-Write tests using real diff samples. Create a `testdata/` directory with sample diffs:
-- `testdata/simple.diff` — a small one-file change
-- `testdata/multifile.diff` — changes across 3-4 files
-- `testdata/newfile.diff` — includes a new file
-- `testdata/rename.diff` — a renamed file
+**Commands:**
+- `:LucidExplain` — explain file under cursor
+- `:LucidSummary` — explain whole diff
+- `:LucidPR 123` — explain a GitHub PR
+- `:LucidChat` — open chat buffer for questions
+- `:LucidClear` — clear accumulated context
+- `:LucidComments` — list collected PR comments
+- `:LucidSubmitReview` — post comments to GitHub PR
+- `:LucidClearComments` — discard collected comments
+- `:LucidClearCache` — delete all cached responses
+- `:LucidLog` — debug output
 
-### Phase 4: Explainer interface + Claude backend
+**Keybindings (leader = `\`):**
+- `\le` — explain file (normal) or selection (visual)
+- `\la` — add visual selection to chat context
+- `\ls` — explain whole diff
+- `\lc` — open chat
+- `\ln` — add comment on current line
 
-Define the interface in `internal/explain/explainer.go`:
+**In chat:** type on `> ` prompt line, `Enter` to send, `q` to close.
 
-```go
-package explain
+**PR review workflow:**
+- Quick: `:LucidPR 42` for overview
+- Deep: `gh pr checkout 42`, then `:Git` → `e` to explain → `x` to mark reviewed
+- Comments: `\ln` to annotate lines → `:LucidSubmitReview` to post to GitHub
 
-type Explainer interface {
-    Explain(ctx context.Context, diff string) (*model.Explanation, error)
-}
-```
+## Prompt philosophy
 
-Implement the Claude backend in `internal/explain/claude.go`:
-- Use the Anthropic Messages API (`https://api.anthropic.com/v1/messages`).
-- Model: `claude-sonnet-4-20250514`.
-- Send the diff with a system prompt that asks for a structured JSON response.
-- Parse the response into `model.Explanation`.
-- Handle errors: rate limits, auth failures, context too long.
-- If the diff is very large (>100KB), consider summarizing or chunking.
+The prompt is the core product. It instructs the LLM to act as a senior code reviewer:
 
-### Phase 5: Prompt engineering
+1. **Group by intent**, not by file.
+2. **Review guidance over description** — every sentence either explains what changed or tells the reviewer what to verify.
+3. **Risk levels** signal where to focus attention.
+4. **Flag suspicious patterns** — missing error handling, auth gaps, untested paths.
+5. **Be terse** — no filler, no preamble.
 
-This is the most important part. The prompt lives in `internal/explain/prompt.go`.
+## Custom prompts
 
-The system prompt should instruct the LLM to:
+Users customize review focus by creating `~/.config/lucid/prompt.txt`. This is appended to the built-in system prompt. Per-project override with `--prompt` flag or `LUCID_PROMPT` env var.
 
-1. First provide a 1-2 sentence summary of the entire change.
-2. Group changes by **intent** (what the developer was trying to achieve), not by file or hunk.
-3. For each intent group, list which files are involved and why.
-4. Assign a risk level (low/medium/high) based on whether the change touches error handling, concurrency, auth, data mutations, public APIs, etc.
-5. Respond ONLY in JSON matching the `Explanation` struct schema.
+## Cache
 
-Include the JSON schema in the prompt so the LLM knows exactly what to produce.
-
-Do NOT ask for hunk-level annotations by default — those are only for `--level full`.
-
-The prompt should also receive context about the programming language (infer from file extensions in the diff) to give language-aware explanations (e.g., Go interface satisfaction, goroutine safety).
-
-### Phase 6: Config
-
-Implement `config/config.go`:
-
-- Load from `~/.lucid.yaml` (use `os.UserHomeDir()`).
-- Support environment variable expansion for API keys: `${ANTHROPIC_API_KEY}`.
-- Fall back to env vars directly if no config file: `LUCID_BACKEND`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`.
-- Config struct:
-
-```go
-type Config struct {
-    Backend string       `yaml:"backend"`
-    Claude  ClaudeConfig `yaml:"claude"`
-    OpenAI  OpenAIConfig `yaml:"openai"`
-    Ollama  OllamaConfig `yaml:"ollama"`
-}
-```
-
-- Use a small YAML parser. `gopkg.in/yaml.v3` is fine as the one external dependency.
-
-### Phase 7: CLI entry point
-
-Implement `cmd/lucid/main.go`:
-
-- Read diff from stdin. If stdin is a terminal (no pipe), print usage and exit.
-- Flags:
-  - `--backend` — override config file backend
-  - `--format` — `terminal` (default) or `json`
-  - `--level` — `summary`, `default`, or `full`
-  - `--config` — path to config file
-- Flow: read stdin → parse diff → select backend → call Explain() → format output → print.
-- Keep it simple. No cobra or fancy CLI framework. Use `flag` from stdlib.
-
-### Phase 8: Terminal output
-
-Implement `internal/output/terminal.go`:
-
-- Pretty-print the `Explanation` struct to the terminal.
-- Use ANSI colors (detect if terminal supports them with `os.Getenv("TERM")`).
-- Summary at the top in a box.
-- Numbered intent groups with risk level color-coded (green/yellow/red).
-- File list indented under each group.
-- For `--level full`, show hunk annotations inline.
-- Keep it readable at 80 columns.
-
-### Phase 9: JSON output
-
-Implement `internal/output/json.go`:
-
-- Simply marshal `model.Explanation` to JSON.
-- Use `json.MarshalIndent` for human-readable output.
-- This is what the Vim plugin consumes.
-
-### Phase 10: OpenAI backend
-
-Implement `internal/explain/openai.go`:
-
-- Same interface, same prompt, different API call.
-- Use the OpenAI Chat Completions API.
-- Model: `gpt-4o`.
-- This proves the pluggable backend works.
-
-### Phase 11: Vim 9 plugin
-
-Implement the Vim9script plugin in `vim/`:
-
-**`vim/plugin/lucid.vim`** — entry point:
-- Guard: check for Vim 9 (`has('vim9script')` and `v:version >= 900`).
-- Define commands: `:Lucid`, `:LucidSummary`, `:LucidFull`.
-- Define keybindings under `<leader>l`.
-
-**`vim/autoload/lucid.vim`** — core logic:
-- `Run(level)` — calls `git diff | lucid --format json --level {level}` via `job_start()`.
-- Collects stdout into a buffer via `out_cb`.
-- On `exit_cb`, parses the JSON with `json_decode()`.
-- Shows the summary in a `popup_create()` at the center of the screen.
-- Lists intent groups as selectable items.
-- When user selects a group (press 1, 2, 3...), shows that group's detail in a new popup or split.
-- `]g` / `[g` to navigate between intent groups.
-- `q` to close.
-
-Keep the Vim plugin minimal. All intelligence is in the Go binary.
-
-### Phase 12: Testing & demo prep
-
-- Write Go unit tests for the diff parser.
-- Write integration tests that use a mock LLM backend (returns canned responses).
-- Create 2-3 real-world demo diffs from actual AI-generated code changes.
-- Prepare a 2-minute demo flow:
-  1. Show a messy multi-file diff in the terminal.
-  2. Run `git diff | lucid` — show the top-down explanation.
-  3. Open Vim, run `:Lucid` — show the popup summary.
-  4. Drill into an intent group.
-  5. Switch backend with `--backend openai` to show pluggability.
-
----
+Responses cached in `~/.cache/lucid/<hash>.json`. Key = md5(diff + level). `--no-cache` to bypass. `--clear-cache` to wipe.
 
 ## Coding conventions
 
-- Go: use standard `gofmt`, no linter exceptions.
-- Error handling: wrap errors with context using `fmt.Errorf("parsing diff: %w", err)`.
-- No global state. Pass config and dependencies explicitly.
-- Tests go next to the code: `parser_test.go` alongside `parser.go`.
-- Vim9script: follow `:h vim9script` conventions. Use `def` not `function`, typed variables.
+- Shell: POSIX sh, no bashisms. `set -e`. Quote variables.
+- Vim9script: `def` not `function`, typed variables, `:h vim9script` conventions.
+- Named `def` callbacks for `job_start()` — Vim9 lambdas can't mutate script-level vars with `..=`.
+- Plugin resolves CLI path via `g:lucid_bin` — no PATH dependency.
 
 ## What NOT to build
 
-- No diff viewer — Vim already has `:diffthis`. This tool explains, it doesn't show.
-- No git integration beyond reading stdin — don't shell out to git from Go.
-- No TUI framework — keep terminal output simple print statements with ANSI.
+- No diff viewer — Vim has `:diffthis`.
+- No API key management — `claude` CLI handles auth.
+- No config file format — custom prompts are plain text, everything else is flags.
+- No TUI framework — fugitive is the file browser.
 - No web UI.
-- No Neovim support (for now) — this is deliberately Vim 9 first.
-
-## Dependencies
-
-- `gopkg.in/yaml.v3` — config parsing. The only external Go dependency.
-- Everything else is Go standard library.
-
-## Environment variables
-
-- `ANTHROPIC_API_KEY` — for Claude backend
-- `OPENAI_API_KEY` — for OpenAI backend
-- `LUCID_BACKEND` — override default backend
-- `LUCID_CONFIG` — override config file path
-
+- No Neovim support (for now) — Vim 9 first.
