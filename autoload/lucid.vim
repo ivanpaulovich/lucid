@@ -319,6 +319,19 @@ export def OpenChat()
   RenderChat()
 enddef
 
+export def Ask(question: string)
+  EnsureChat()
+  RenderChat()
+  # Append the question to the prompt line and submit
+  var winid = FindBufWin(chat_bufnr)
+  if winid > 0
+    var last_line = len(getbufline(chat_bufnr, 1, '$'))
+    setbufline(chat_bufnr, last_line, '> ' .. question)
+    win_execute(winid, 'normal! ' .. last_line .. 'G$')
+  endif
+  SubmitChat()
+enddef
+
 def EnsureChat()
   var winid = FindBufWin(chat_bufnr)
   if winid > 0
@@ -342,6 +355,7 @@ def EnsureChat()
 
   nnoremap <buffer> <silent> q :close<CR>
   nnoremap <buffer> <silent> <CR> <ScriptCmd>SubmitChat()<CR>
+  inoremap <buffer> <silent> <CR> <Esc><ScriptCmd>SubmitChat()<CR>
 enddef
 
 def RenderChat()
@@ -433,10 +447,8 @@ def SubmitChat()
 
   var winid = FindBufWin(chat_bufnr)
   if winid > 0
-    win_execute(winid, 'setlocal modifiable')
     appendbufline(chat_bufnr, '$', '')
     appendbufline(chat_bufnr, '$', SPINNER[0] .. '  thinking...')
-    win_execute(winid, 'setlocal nomodifiable')
   endif
 
   last_cmd = cmd
@@ -457,7 +469,6 @@ def OnChatExit(j: job, status: number)
   endif
 
   var buf_lines = getbufline(chat_bufnr, 1, '$')
-  win_execute(winid, 'setlocal modifiable')
   for k in range(len(buf_lines) - 1, 0, -1)
     if buf_lines[k] =~ '^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]'
       deletebufline(chat_bufnr, k + 1)
@@ -482,7 +493,6 @@ def OnChatExit(j: job, status: number)
 
   appendbufline(chat_bufnr, '$', '')
   appendbufline(chat_bufnr, '$', '> ')
-  win_execute(winid, 'setlocal nomodifiable')
 
   var last_line = len(getbufline(chat_bufnr, 1, '$'))
   win_execute(winid, 'normal! ' .. last_line .. 'G$')
